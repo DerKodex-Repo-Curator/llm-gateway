@@ -7,6 +7,7 @@ The gateway exposes OpenTelemetry metrics via a Prometheus exporter. When enable
 ```yaml
 metrics:
   enabled: true
+  stream_usage: true   # optional; capture token usage on the streaming path
 ```
 
 ## Instruments
@@ -42,6 +43,7 @@ All metric names are prefixed with `llm_gateway.`.
 |---|---|---|
 | `provider` | provider name | which provider reported the usage |
 | `model` | model name | the model used |
+| `key` | key name or empty | the API key name (when [virtual API keys](api-keys.md) are enabled) |
 
 **`llm_gateway.tokens.completion`** (counter) -- total completion (output) tokens across all requests.
 
@@ -49,8 +51,16 @@ All metric names are prefixed with `llm_gateway.`.
 |---|---|---|
 | `provider` | provider name | which provider reported the usage |
 | `model` | model name | the model used |
+| `key` | key name or empty | the API key name (when [virtual API keys](api-keys.md) are enabled) |
 
-Token metrics are recorded from the `usage` field in non-streaming chat completion responses. Streaming responses typically do not include token counts.
+Non-streaming responses are always metered, from the `usage` field of the completion response.
+
+Streaming responses are metered only when `metrics.stream_usage` is enabled, because asking for streamed usage changes what the gateway sends upstream:
+
+- **OpenAI and local backends** report streamed usage only when the request carries `stream_options.include_usage`, which the gateway sets on the upstream request when the toggle is on. Local backends vary in whether they honor it; one that ignores it simply reports no usage, and the request is still counted by `llm_gateway.requests`.
+- **Anthropic** always streams usage and needs no opt-in, but honors the toggle anyway so token semantics stay consistent across providers.
+
+A stream that ends without a usage event -- an upstream that omits it, or a client that disconnects mid-stream -- records no token sample rather than a partial count.
 
 ### Routing Metrics
 

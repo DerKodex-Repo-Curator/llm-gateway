@@ -143,6 +143,18 @@ func (o *OpenAI) readSSEStream(ctx context.Context, body io.ReadCloser, events c
 			return
 		}
 
+		// a terminal usage chunk (stream_options.include_usage) carries usage and
+		// an empty choices array; surface it as a Usage event and don't also emit
+		// it as an empty content chunk.
+		if usage := parseStreamUsage(data); usage != nil {
+			if !sendEvent(ctx, events, StreamEvent{Usage: usage}) {
+				return
+			}
+			if len(chunk.Choices) == 0 {
+				continue
+			}
+		}
+
 		if !sendEvent(ctx, events, StreamEvent{Chunk: chunk}) {
 			return
 		}

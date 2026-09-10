@@ -99,7 +99,7 @@ The unknown and expired cases are intentionally indistinguishable to clients.
 
 ## Logging and Metrics
 
-The validated key name appears in semantic-routing log lines and as the `key` attribute on `llm_gateway.requests` and `llm_gateway.request.duration`. Secret values and digests are never logged. Source freshness, reload results, exclusion, and resident-record metrics are documented in [Key Sources](key-sources.md) and [Metrics](metrics.md).
+The validated key name appears in semantic-routing log lines and as the `key` attribute on `llm_gateway.requests`, `llm_gateway.request.duration`, `llm_gateway.tokens.prompt` and `llm_gateway.tokens.completion`. Streaming requests contribute to the token counters only when `metrics.stream_usage` is enabled; see [Metrics](metrics.md). Secret values and digests are never logged. Source freshness, reload results, exclusion, and resident-record metrics are documented in [Key Sources](key-sources.md) and [Metrics](metrics.md).
 
 ## Not Yet Implemented
 
@@ -107,5 +107,5 @@ The validated key name appears in semantic-routing log lines and as the `key` at
 - Expiry on inline configuration keys and advance-expiry warnings
 - Plaintext-free inline configuration
 - Per-key rate limiting
-- Per-key token accounting and spend limits
+- Per-key spend limits
 - Cancelling in-flight work when a key is revoked

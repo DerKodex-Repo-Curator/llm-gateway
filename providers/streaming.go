@@ -25,6 +25,20 @@ func parseStreamChunk(data string) (*StreamChunk, error) {
 	return &chunk, nil
 }
 
+// parseStreamUsage extracts a terminal usage payload from an OpenAI-compatible
+// SSE data line. OpenAI emits this only when stream_options.include_usage is set,
+// as a chunk whose choices is empty and which carries a usage object. Returns nil
+// when the line carries no usage (every normal content chunk).
+func parseStreamUsage(data string) *Usage {
+	var probe struct {
+		Usage *Usage `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(data), &probe); err != nil {
+		return nil
+	}
+	return probe.Usage
+}
+
 // sendEvent delivers ev on events, abandoning the send if ctx is cancelled
 // first. A reader parked on a full event channel is blocked on a channel send,
 // not a socket read, so nothing else wakes it when the consumer walks away.
