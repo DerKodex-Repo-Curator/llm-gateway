@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+FIX: An abandoned streaming request no longer leaks its provider SSE reader. When the gateway stopped consuming a stream while the reader was parked on its full event channel -- the slow-consumer case, where the gateway is blocked writing to a stalled client and the buffer fills behind it -- the reader blocked on a channel send forever, because request cancellation cannot interrupt a send the way it interrupts a socket read. The upstream connection was not stranded and generation did not continue, so nothing was billed, but the goroutine and its unclosed response body were never reclaimed. Each provider's reader now sends through a cancellation-aware select and returns when the consumer is gone.
+
 ## v0.1.7
 
 FEATURE: Virtual API keys can now be composed from boot-resident config keys, reloadable strict-YAML files, and a versioned HTTP key API. Sources refresh without restarting, converge through polling plus optional file watches and Unix `SIGHUP`, hold last-known-good on reload failure, and support optional fail-closed exclusion through `max_staleness`. The resident store keeps only SHA-256 digests, source records may publish `key_sha256` and exact-boundary `expires_at`, HTTP refreshes support ETag/conditional `304`, and four OpenTelemetry instruments expose refresh results, freshness, exclusion, and resident cardinality. See [docs/current/key-sources.md](docs/current/key-sources.md).
