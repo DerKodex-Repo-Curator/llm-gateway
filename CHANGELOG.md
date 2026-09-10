@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+FEATURE: Token usage on the streaming path is now metered, and both token counters carry the `key` attribute, so per-agent token attribution covers streaming as well as non-streaming traffic. Behind a new `metrics.stream_usage` toggle the gateway sets `stream_options.include_usage` on OpenAI and local upstreams and records the usage Anthropic already streams, emitting it as a terminal event just before the stream completes. The toggle defaults off because requesting streamed usage changes what is sent upstream and local backends differ in whether they honor it; a stream that reports no usage records no token sample rather than a partial count. Client-facing SSE output is unchanged. See [docs/current/metrics.md](docs/current/metrics.md).
+
 ## v0.1.7
 
 FEATURE: Virtual API keys can now be composed from boot-resident config keys, reloadable strict-YAML files, and a versioned HTTP key API. Sources refresh without restarting, converge through polling plus optional file watches and Unix `SIGHUP`, hold last-known-good on reload failure, and support optional fail-closed exclusion through `max_staleness`. The resident store keeps only SHA-256 digests, source records may publish `key_sha256` and exact-boundary `expires_at`, HTTP refreshes support ETag/conditional `304`, and four OpenTelemetry instruments expose refresh results, freshness, exclusion, and resident cardinality. See [docs/current/key-sources.md](docs/current/key-sources.md).
