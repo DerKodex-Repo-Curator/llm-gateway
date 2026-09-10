@@ -218,12 +218,12 @@ func (a *Anthropic) ChatCompletionStream(ctx context.Context, req *ChatCompletio
 	}
 
 	events := make(chan StreamEvent, 10)
-	go a.readSSEStream(resp.Body, events, req.Model)
+	go a.readSSEStream(ctx, resp.Body, events, req.Model)
 
 	return events, nil
 }
 
-func (a *Anthropic) readSSEStream(body io.ReadCloser, events chan<- StreamEvent, model string) {
+func (a *Anthropic) readSSEStream(ctx context.Context, body io.ReadCloser, events chan<- StreamEvent, model string) {
 	defer close(events)
 	defer body.Close()
 
@@ -238,14 +238,15 @@ func (a *Anthropic) readSSEStream(body io.ReadCloser, events chan<- StreamEvent,
 	toolIndexByBlock := map[int]int{}
 	nextToolIndex := 0
 
-	emit := func(delta *Delta) {
-		events <- StreamEvent{Chunk: &StreamChunk{
+	// emit reports false when the consumer is gone, so the caller stops reading.
+	emit := func(delta *Delta) bool {
+		return sendEvent(ctx, events, StreamEvent{Chunk: &StreamChunk{
 			ID:      messageID,
 			Object:  "chat.completion.chunk",
 			Created: created,
 			Model:   model,
 			Choices: []Choice{{Index: 0, Delta: delta}},
-		}}
+		}})
 	}
 
 	for scanner.Scan() {
@@ -263,7 +264,7 @@ func (a *Anthropic) readSSEStream(body io.ReadCloser, events chan<- StreamEvent,
 
 		var event anthropicStreamEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			events <- StreamEvent{Err: fmt.Errorf("failed to parse event: %w", err)}
+			sendEvent(ctx, events, StreamEvent{Err: fmt.Errorf("failed to parse event: %w", err)})
 			return
 		}
 
@@ -279,12 +280,14 @@ func (a *Anthropic) readSSEStream(body io.ReadCloser, events chan<- StreamEvent,
 				toolIndexByBlock[event.Index] = idx
 				nextToolIndex++
 				// opening tool chunk: index + id + type + name, empty arguments
-				emit(&Delta{ToolCalls: []ToolCall{{
+				if !emit(&Delta{ToolCalls: []ToolCall{{
 					Index:    &idx,
 					ID:       event.ContentBlock.ID,
 					Type:     "function",
 					Function: FunctionCall{Name: event.ContentBlock.Name},
-				}}})
+				}}}) {
+					return
+				}
 			}
 
 		case "content_block_delta":
@@ -299,13 +302,15 @@ func (a *Anthropic) readSSEStream(body io.ReadCloser, events chan<- StreamEvent,
 				}
 				toolIdx := idx
 				// argument fragment: index + arguments only
-				emit(&Delta{ToolCalls: []ToolCall{{
+				if !emit(&Delta{ToolCalls: []ToolCall{{
 					Index:    &toolIdx,
 					Function: FunctionCall{Arguments: event.Delta.PartialJSON},
-				}}})
+				}}}) {
+					return
+				}
 			default:
-				if event.Delta.Text != "" {
-					emit(&Delta{Content: event.Delta.Text})
+				if event.Delta.Text != "" && !emit(&Delta{Content: event.Delta.Text}) {
+					return
 				}
 			}
 
@@ -325,7 +330,9 @@ func (a *Anthropic) readSSEStream(body io.ReadCloser, events chan<- StreamEvent,
 						},
 					},
 				}
-				events <- StreamEvent{Chunk: chunk}
+				if !sendEvent(ctx, events, StreamEvent{Chunk: chunk}) {
+					return
+				}
 			}
 
 		case "error":
@@ -335,17 +342,17 @@ func (a *Anthropic) readSSEStream(body io.ReadCloser, events chan<- StreamEvent,
 			if event.Error != nil && event.Error.Message != "" {
 				msg = fmt.Sprintf("anthropic stream error: %s", event.Error.Message)
 			}
-			events <- StreamEvent{Err: fmt.Errorf("%s", msg)}
+			sendEvent(ctx, events, StreamEvent{Err: fmt.Errorf("%s", msg)})
 			return
 
 		case "message_stop":
-			events <- StreamEvent{Done: true}
+			sendEvent(ctx, events, StreamEvent{Done: true})
 			return
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		events <- StreamEvent{Err: fmt.Errorf("stream read error: %w", err)}
+		sendEvent(ctx, events, StreamEvent{Err: fmt.Errorf("stream read error: %w", err)})
 	}
 }
 

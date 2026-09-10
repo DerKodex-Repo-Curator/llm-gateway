@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"strings"
@@ -558,7 +559,7 @@ func TestAnthropicStreamToolCalls(t *testing.T) {
 	}, "\n")
 
 	events := make(chan StreamEvent, 10)
-	go a.readSSEStream(io.NopCloser(strings.NewReader(sse)), events, "claude-sonnet-4-6")
+	go a.readSSEStream(context.Background(), io.NopCloser(strings.NewReader(sse)), events, "claude-sonnet-4-6")
 
 	var chunks []*StreamChunk
 	var done bool
@@ -639,7 +640,7 @@ func TestAnthropicStreamErrorEvent(t *testing.T) {
 	}, "\n")
 
 	events := make(chan StreamEvent, 10)
-	go a.readSSEStream(io.NopCloser(strings.NewReader(sse)), events, "claude-sonnet-4-6")
+	go a.readSSEStream(context.Background(), io.NopCloser(strings.NewReader(sse)), events, "claude-sonnet-4-6")
 
 	var streamErr error
 	var done bool
@@ -684,7 +685,7 @@ func TestAnthropicStreamToolCallIndexMapping(t *testing.T) {
 	}, "\n")
 
 	events := make(chan StreamEvent, 10)
-	go a.readSSEStream(io.NopCloser(strings.NewReader(sse)), events, "m")
+	go a.readSSEStream(context.Background(), io.NopCloser(strings.NewReader(sse)), events, "m")
 
 	var textContent string
 	var toolIdx *int

@@ -1,10 +1,13 @@
 package providers
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestChoiceFinishReasonJSONShape(t *testing.T) {
@@ -53,7 +56,7 @@ func TestOpenAIStreamErrorEnvelopeSurfaces(t *testing.T) {
 	}, "\n")
 
 	events := make(chan StreamEvent, 10)
-	go o.readSSEStream(io.NopCloser(strings.NewReader(sse)), events)
+	go o.readSSEStream(context.Background(), io.NopCloser(strings.NewReader(sse)), events)
 
 	var streamErr error
 	var done bool
@@ -74,5 +77,97 @@ func TestOpenAIStreamErrorEnvelopeSurfaces(t *testing.T) {
 	}
 	if done {
 		t.Error("an errored stream must not also emit Done")
+	}
+}
+
+// trackingBody is an SSE source that records whether it was closed, so a test
+// can assert the reader's deferred Close actually ran.
+type trackingBody struct {
+	r      *strings.Reader
+	once   sync.Once
+	closed chan struct{}
+}
+
+func newTrackingBody(sse string) *trackingBody {
+	return &trackingBody{r: strings.NewReader(sse), closed: make(chan struct{})}
+}
+
+func (b *trackingBody) Read(p []byte) (int, error) { return b.r.Read(p) }
+
+func (b *trackingBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
+}
+
+// TestAbandonedStreamReaderExitsOnCancel pins the fix for the abandoned-stream
+// goroutine leak: a reader that has filled the event channel is parked on a
+// channel send, which no socket-level cancellation can interrupt. Request
+// cancellation must unblock it so the goroutine returns and the upstream body
+// is closed.
+func TestAbandonedStreamReaderExitsOnCancel(t *testing.T) {
+	const chunks = 200
+
+	openAISSE := strings.Repeat(
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"x"}}]}`+"\n\n",
+		chunks)
+	anthropicSSE := strings.Repeat(
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}`+"\n\n",
+		chunks)
+
+	cases := []struct {
+		name string
+		sse  string
+		read func(context.Context, io.ReadCloser, chan StreamEvent)
+	}{
+		{"openai", openAISSE, func(ctx context.Context, body io.ReadCloser, ev chan StreamEvent) {
+			NewOpenAI("test-key", "").readSSEStream(ctx, body, ev)
+		}},
+		{"local", openAISSE, func(ctx context.Context, body io.ReadCloser, ev chan StreamEvent) {
+			NewLocal("http://127.0.0.1:1").readSSEStream(ctx, body, ev)
+		}},
+		{"anthropic", anthropicSSE, func(ctx context.Context, body io.ReadCloser, ev chan StreamEvent) {
+			NewAnthropic("test-key", "").readSSEStream(ctx, body, ev, "claude-test")
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := newTrackingBody(tc.sse)
+			// same buffer the providers allocate; nothing ever consumes it, so
+			// the reader parks once it is full, exactly as it does when the
+			// handler stops draining a stream mid-flight.
+			events := make(chan StreamEvent, 10)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				tc.read(ctx, body, events)
+			}()
+
+			deadline := time.Now().Add(2 * time.Second)
+			for len(events) < cap(events) {
+				if time.Now().After(deadline) {
+					t.Fatalf("reader never filled the event channel (len=%d)", len(events))
+				}
+				time.Sleep(time.Millisecond)
+			}
+
+			cancel()
+
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("reader goroutine did not exit after cancellation; the stream reader is leaked")
+			}
+
+			select {
+			case <-body.closed:
+			default:
+				t.Error("upstream response body was not closed")
+			}
+		})
 	}
 }

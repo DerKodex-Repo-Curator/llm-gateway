@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,6 +23,18 @@ func parseStreamChunk(data string) (*StreamChunk, error) {
 		return nil, fmt.Errorf("failed to parse chunk: %w", err)
 	}
 	return &chunk, nil
+}
+
+// sendEvent delivers ev on events, abandoning the send if ctx is cancelled
+// first. A reader parked on a full event channel is blocked on a channel send,
+// not a socket read, so nothing else wakes it when the consumer walks away.
+func sendEvent(ctx context.Context, events chan<- StreamEvent, ev StreamEvent) bool {
+	select {
+	case events <- ev:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // SSEWriter provides utilities for writing Server-Sent Events.

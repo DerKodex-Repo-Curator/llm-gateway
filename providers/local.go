@@ -105,12 +105,12 @@ func (l *Local) ChatCompletionStream(ctx context.Context, req *ChatCompletionReq
 	}
 
 	events := make(chan StreamEvent, 10)
-	go l.readSSEStream(resp.Body, events)
+	go l.readSSEStream(ctx, resp.Body, events)
 
 	return events, nil
 }
 
-func (l *Local) readSSEStream(body io.ReadCloser, events chan<- StreamEvent) {
+func (l *Local) readSSEStream(ctx context.Context, body io.ReadCloser, events chan<- StreamEvent) {
 	defer close(events)
 	defer body.Close()
 
@@ -129,21 +129,23 @@ func (l *Local) readSSEStream(body io.ReadCloser, events chan<- StreamEvent) {
 		data := strings.TrimPrefix(line, "data: ")
 
 		if data == "[DONE]" {
-			events <- StreamEvent{Done: true}
+			sendEvent(ctx, events, StreamEvent{Done: true})
 			return
 		}
 
 		chunk, err := parseStreamChunk(data)
 		if err != nil {
-			events <- StreamEvent{Err: err}
+			sendEvent(ctx, events, StreamEvent{Err: err})
 			return
 		}
 
-		events <- StreamEvent{Chunk: chunk}
+		if !sendEvent(ctx, events, StreamEvent{Chunk: chunk}) {
+			return
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		events <- StreamEvent{Err: fmt.Errorf("stream read error: %w", err)}
+		sendEvent(ctx, events, StreamEvent{Err: fmt.Errorf("stream read error: %w", err)})
 	}
 }
 
