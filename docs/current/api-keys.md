@@ -107,5 +107,5 @@ The validated key name appears in semantic-routing log lines, per-request usage 
 - Expiry on inline configuration keys and advance-expiry warnings
 - Plaintext-free inline configuration
 - Per-key rate limiting
-- Per-key token accounting and spend limits
+- Per-key spend limits
 - Cancelling in-flight work when a key is revoked
