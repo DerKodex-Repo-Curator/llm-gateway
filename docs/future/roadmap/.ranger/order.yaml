@@ -4,7 +4,6 @@ horizon:
   - api-key-expiry.md
   - per-key-rate-limiting.md
 researching:
-  - per-key-metrics.md
   - key-storage.md
 building:
 evaluating:

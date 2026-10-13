@@ -46,7 +46,7 @@ Inline configuration necessarily contains plaintext, but the resident store does
 
 ## Identity and Restrictions
 
-`name` is the stable attribution identity used in request metrics and routing logs. It must be non-empty and is compared exactly: case, whitespace, and Unicode form are not normalized. Renaming a record moves future observations to a new identity. Publishing two records with one name is appropriate during a key-rotation window, but otherwise merges their attribution.
+`name` is the stable attribution identity used in request and token metrics, usage records, and routing logs. It must be non-empty and is compared exactly: case, whitespace, and Unicode form are not normalized. Renaming a record moves future observations to a new identity. Publishing two records with one name is appropriate during a key-rotation window, but otherwise merges their attribution.
 
 ### Model Restrictions
 
@@ -99,7 +99,7 @@ The unknown and expired cases are intentionally indistinguishable to clients.
 
 ## Logging and Metrics
 
-The validated key name appears in semantic-routing log lines and as the `key` attribute on `llm_gateway.requests` and `llm_gateway.request.duration`. Secret values and digests are never logged. Source freshness, reload results, exclusion, and resident-record metrics are documented in [Key Sources](key-sources.md) and [Metrics](metrics.md).
+The validated key name appears in semantic-routing log lines, per-request usage records, and as the `key` attribute on `llm_gateway.requests`, `llm_gateway.request.duration`, `llm_gateway.tokens.prompt`, and `llm_gateway.tokens.completion`. Secret values and digests are never logged. Source freshness, reload results, exclusion, resident-record metrics, and usage records are documented in [Key Sources](key-sources.md) and [Metrics](metrics.md).
 
 ## Not Yet Implemented
 

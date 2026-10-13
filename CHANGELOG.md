@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+FEATURE: Prompt and completion token metrics now carry `key` and `streaming` labels on both completion paths. OpenAI and local streaming requests ask upstream for usage and consume it without exposing usage chunks to clients; Anthropic assembles cumulative usage totals. Each request meters the latest reported total once, and backends that report no usage increment no token counters. See [docs/current/metrics.md](docs/current/metrics.md).
+
+FEATURE: Every dispatched completion now writes one structured usage record on the `usage` log channel, including when metrics are disabled. An optional `X-LLM-Gateway-Run` header enables downstream totals grouped by key and run; invalid or repeated values are ignored. Records omit token fields when unmeasured and carry the completion id and client-facing error type. An upstream error envelope that omits `type` now reaches the client as `server_error` rather than with an empty type. See [docs/current/metrics.md](docs/current/metrics.md#usage-records).
+
 ## v0.1.7
 
 FEATURE: Virtual API keys can now be composed from boot-resident config keys, reloadable strict-YAML files, and a versioned HTTP key API. Sources refresh without restarting, converge through polling plus optional file watches and Unix `SIGHUP`, hold last-known-good on reload failure, and support optional fail-closed exclusion through `max_staleness`. The resident store keeps only SHA-256 digests, source records may publish `key_sha256` and exact-boundary `expires_at`, HTTP refreshes support ETag/conditional `304`, and four OpenTelemetry instruments expose refresh results, freshness, exclusion, and resident cardinality. See [docs/current/key-sources.md](docs/current/key-sources.md).

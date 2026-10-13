@@ -17,12 +17,12 @@ import (
 	"github.com/openziti/zrok/v2/sdk/golang/sdk"
 )
 
-func captureGatewayLogs(t *testing.T) *bytes.Buffer {
+func captureGatewayLogs(t *testing.T, useJSON ...bool) *bytes.Buffer {
 	t.Helper()
 	var output bytes.Buffer
 	opts := dl.DefaultOptions()
 	opts.Level = slog.LevelDebug
-	opts.UseJSON = false
+	opts.UseJSON = len(useJSON) > 0 && useJSON[0]
 	opts.UseColor = false
 	opts.Output = &output
 	dl.Init(opts)

@@ -78,6 +78,7 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, _ *http.Request) {
 func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	start := time.Now()
+	run := runID(r)
 
 	if g.meters != nil {
 		g.meters.inflight.Add(ctx, 1)
@@ -105,6 +106,10 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	keyEntry := keys.FromContext(ctx)
+	keyName := ""
+	if keyEntry != nil {
+		keyName = keyEntry.Name
+	}
 
 	capabilityResolved := false
 	if routing.IsCapabilityModel(req.Model) {
@@ -165,34 +170,16 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 
 	dl.Infof("routing model '%s' to %s", req.Model, providerType)
 
-	streaming := "false"
+	var result completionResult
 	if req.Stream {
-		streaming = "true"
-	}
-
-	if req.Stream {
-		g.handleStreamingCompletion(ctx, w, provider, &req)
+		result = g.handleStreamingCompletion(ctx, w, provider, &req)
 	} else {
-		g.handleNonStreamingCompletion(ctx, w, provider, providerType, &req)
+		result = g.handleNonStreamingCompletion(ctx, w, provider, &req)
 	}
-
-	if g.meters != nil {
-		keyName := ""
-		if keyEntry != nil {
-			keyName = keyEntry.Name
-		}
-		g.meters.requests.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("provider", string(providerType)),
-			attribute.String("model", req.Model),
-			attribute.String("streaming", streaming),
-			attribute.String("key", keyName),
-		))
-		g.meters.requestDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(
-			attribute.String("provider", string(providerType)),
-			attribute.String("model", req.Model),
-			attribute.String("key", keyName),
-		))
-	}
+	g.meterCompletion(ctx, usageRecord{
+		key: keyName, run: run, provider: string(providerType), model: req.Model,
+		streaming: req.Stream, duration: time.Since(start),
+	}, result)
 }
 
 // logAndAuthorizeDecision is the single owner of key->route authorization for
@@ -228,11 +215,10 @@ func (g *Gateway) logAndAuthorizeDecision(ctx context.Context, w http.ResponseWr
 	return false
 }
 
-func (g *Gateway) handleNonStreamingCompletion(ctx context.Context, w http.ResponseWriter, provider providers.Provider, providerType providers.ProviderType, req *providers.ChatCompletionRequest) {
+func (g *Gateway) handleNonStreamingCompletion(ctx context.Context, w http.ResponseWriter, provider providers.Provider, req *providers.ChatCompletionRequest) completionResult {
 	resp, err := provider.ChatCompletion(ctx, req)
 	if err != nil {
-		g.writeProviderError(w, err)
-		return
+		return completionResult{errorType: g.writeProviderError(w, err)}
 	}
 
 	// the reported model is the gateway's binding, not the upstream's self-report
@@ -242,48 +228,49 @@ func (g *Gateway) handleNonStreamingCompletion(ctx context.Context, w http.Respo
 		dl.Infof("upstream reported '%s' for binding '%s'", resp.Model, req.Model)
 	}
 	resp.Model = req.Model
-	if g.meters != nil && resp.Usage != nil {
-		tokenAttrs := metric.WithAttributes(
-			attribute.String("provider", string(providerType)),
-			attribute.String("model", req.Model),
-		)
-		g.meters.tokensPrompt.Add(ctx, int64(resp.Usage.PromptTokens), tokenAttrs)
-		g.meters.tokensCompletion.Add(ctx, int64(resp.Usage.CompletionTokens), tokenAttrs)
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+	return completionResult{usage: resp.Usage, id: resp.ID}
 }
 
-func (g *Gateway) handleStreamingCompletion(ctx context.Context, w http.ResponseWriter, provider providers.Provider, req *providers.ChatCompletionRequest) {
+func (g *Gateway) handleStreamingCompletion(ctx context.Context, w http.ResponseWriter, provider providers.Provider, req *providers.ChatCompletionRequest) completionResult {
 	sse := providers.NewSSEWriter(w)
 	if sse == nil {
 		providers.WriteError(w, providers.NewAPIError("streaming not supported", providers.ErrorTypeServer), http.StatusInternalServerError)
-		return
+		return completionResult{errorType: providers.ErrorTypeServer}
 	}
 
 	events, err := provider.ChatCompletionStream(ctx, req)
 	if err != nil {
-		g.writeProviderError(w, err)
-		return
+		return completionResult{errorType: g.writeProviderError(w, err)}
 	}
 
 	sse.WriteHeaders()
 
 	loggedUpstreamModel := false
+	var result completionResult
 	for event := range events {
 		if event.Err != nil {
 			dl.Errorf("stream error: %v", event.Err)
 			sse.WriteError(providers.ErrProviderError(event.Err.Error()))
-			return
+			result.errorType = providers.ErrorTypeServer
+			return result
+		}
+
+		if event.Usage != nil {
+			result.usage = event.Usage
+			continue
 		}
 
 		if event.Done {
 			sse.WriteDone()
-			return
+			return result
 		}
 
 		if event.Chunk != nil {
+			if result.id == "" {
+				result.id = event.Chunk.ID
+			}
 			// the reported model is the gateway's binding; log a differing
 			// upstream self-report once per stream so aliasing stays visible.
 			if !loggedUpstreamModel && event.Chunk.Model != "" && event.Chunk.Model != req.Model {
@@ -293,7 +280,7 @@ func (g *Gateway) handleStreamingCompletion(ctx context.Context, w http.Response
 			event.Chunk.Model = req.Model
 			if err := sse.WriteChunk(event.Chunk); err != nil {
 				dl.Errorf("error writing chunk: %v", err)
-				return
+				return result
 			}
 		}
 	}
@@ -302,6 +289,8 @@ func (g *Gateway) handleStreamingCompletion(ctx context.Context, w http.Response
 	// truncation rather than letting the client read it as completion.
 	dl.Error("stream ended without a terminal event")
 	sse.WriteError(providers.ErrProviderError("upstream stream ended unexpectedly"))
+	result.errorType = providers.ErrorTypeServer
+	return result
 }
 
 func buildRequestInfo(req *providers.ChatCompletionRequest) *routing.RequestInfo {
@@ -361,8 +350,13 @@ func (g *Gateway) logRequest(req *providers.ChatCompletionRequest) {
 	}
 }
 
-func (g *Gateway) writeProviderError(w http.ResponseWriter, err error) {
+func (g *Gateway) writeProviderError(w http.ResponseWriter, err error) string {
 	if apiErr, ok := err.(*providers.APIError); ok {
+		if apiErr.Type == "" {
+			normalized := *apiErr
+			normalized.Type = providers.ErrorTypeServer
+			apiErr = &normalized
+		}
 		if g.meters != nil {
 			g.meters.providerErrors.Add(context.Background(), 1,
 				metric.WithAttributes(attribute.String("error_type", apiErr.Type)),
@@ -370,7 +364,7 @@ func (g *Gateway) writeProviderError(w http.ResponseWriter, err error) {
 		}
 		statusCode := providers.StatusCodeForError(apiErr.Type)
 		providers.WriteError(w, apiErr, statusCode)
-		return
+		return apiErr.Type
 	}
 
 	if g.meters != nil {
@@ -381,4 +375,5 @@ func (g *Gateway) writeProviderError(w http.ResponseWriter, err error) {
 	dl.Errorf("provider error: %v", err)
 	apiErr := providers.ErrProviderError(err.Error())
 	providers.WriteError(w, apiErr, http.StatusInternalServerError)
+	return providers.ErrorTypeServer
 }
