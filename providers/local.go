@@ -81,7 +81,10 @@ func (l *Local) ChatCompletion(ctx context.Context, req *ChatCompletionRequest) 
 func (l *Local) ChatCompletionStream(ctx context.Context, req *ChatCompletionRequest) (<-chan StreamEvent, error) {
 	req.Stream = true
 
-	body, err := json.Marshal(req)
+	body, err := json.Marshal(upstreamStreamRequest{
+		ChatCompletionRequest: req,
+		StreamOptions:         streamOptions{IncludeUsage: true},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -139,6 +142,13 @@ func (l *Local) readSSEStream(body io.ReadCloser, events chan<- StreamEvent) {
 			return
 		}
 
+		if chunk.Usage != nil {
+			events <- StreamEvent{Usage: chunk.Usage}
+			chunk.Usage = nil
+			if len(chunk.Choices) == 0 {
+				continue // a usage-only chunk exists only because the gateway asked
+			}
+		}
 		events <- StreamEvent{Chunk: chunk}
 	}
 
