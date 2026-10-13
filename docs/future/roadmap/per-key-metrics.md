@@ -1,9 +1,12 @@
 ---
 title: per-key metrics
-state: building
+state: researching
 created: 2026-07-24
 tags: [feature, spike]
 milestone: v0.1.x
+log:
+  - stamp: 2026-09-15
+    note: spec + work order drawn — docs/future/per-key-metrics.md, docs/future/per-key-metrics-work-order.md
 ---
 
 Give operators a per-agent view of gateway usage — keyed by the `sk-gw-*` API key on each request:
@@ -11,6 +14,7 @@ Give operators a per-agent view of gateway usage — keyed by the `sk-gw-*` API 
 - request volume
 - token usage (prompt + completion)
 - model usage (which models it calls)
+- per-run attribution, from a caller-supplied run id carried into a per-request record
 
 ## Discussion
 
