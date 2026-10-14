@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.1.8
+
 FEATURE: Prompt and completion token metrics now carry `key` and `streaming` labels on both completion paths. OpenAI and local streaming requests ask upstream for usage and consume it without exposing usage chunks to clients; Anthropic assembles cumulative usage totals. Each request meters the latest reported total once, and backends that report no usage increment no token counters. See [docs/current/metrics.md](docs/current/metrics.md).
 
 FEATURE: Every dispatched completion now writes one structured usage record on the `usage` log channel, including when metrics are disabled. An optional `X-LLM-Gateway-Run` header enables downstream totals grouped by key and run; invalid or repeated values are ignored. Records omit token fields when unmeasured and carry the completion id and client-facing error type. See [docs/current/metrics.md](docs/current/metrics.md#usage-records).
