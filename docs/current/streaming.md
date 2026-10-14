@@ -38,10 +38,11 @@ Each event is a `data:` line followed by a blank line. The stream ends with `dat
 
 1. The client sends `POST /v1/chat/completions` with `"stream": true`.
 2. The gateway routes the request to the appropriate provider.
-3. The provider opens a streaming connection to the upstream API and returns a Go channel (`<-chan StreamEvent`).
-4. The gateway sets SSE response headers and begins writing chunks as they arrive on the channel.
-5. Each chunk is JSON-marshaled and written as a `data:` event, then flushed immediately.
-6. When the provider signals completion, the gateway writes `data: [DONE]` and closes the connection.
+3. OpenAI and local providers add `"stream_options":{"include_usage":true}` to the outbound streaming request. This option is never sent on non-streaming requests. A client-sent `stream_options` is dropped during request decoding; the gateway asks independently.
+4. The provider opens a streaming connection to the upstream API and returns a Go channel (`<-chan StreamEvent`).
+5. The gateway sets SSE response headers and begins writing chunks as they arrive on the channel. Providers emit usage as separate events: usage-only chunks are consumed, and `usage` is stripped from content chunks before forwarding.
+6. Each content chunk is JSON-marshaled and written as a `data:` event, then flushed immediately. The handler retains the latest complete usage total.
+7. When the provider signals completion, the gateway writes `data: [DONE]` and closes the connection. The reported total is then used for per-key token metrics and the [usage record](metrics.md#usage-records).
 
 ### Response Headers
 
@@ -66,9 +67,9 @@ If an error occurs **during** streaming (e.g., upstream connection drops), the e
 
 All three providers support streaming, but the underlying protocols differ. The gateway normalizes them into a consistent OpenAI-format SSE stream.
 
-### OpenAI and Ollama
+### OpenAI and Local
 
-Both natively produce OpenAI-format SSE streams. The gateway reads `data:` lines, parses each as a `StreamChunk`, and forwards them directly. The `[DONE]` sentinel terminates the stream.
+OpenAI and compatible local backends natively produce OpenAI-format SSE streams. The gateway reads `data:` lines and parses each as a `StreamChunk`. A trailing usage-only chunk becomes a usage event without a forwarded chunk; a content chunk carrying usage is forwarded with the field cleared. A choices-less chunk without usage is still forwarded. The `[DONE]` sentinel terminates the stream. A local backend that rejects unknown request fields will fail streaming requests because of the injected `stream_options`; a backend that ignores it can complete without reporting usage.
 
 ### Anthropic
 
@@ -77,11 +78,14 @@ Anthropic uses a different event format. The gateway translates on the fly:
 | Anthropic event | Gateway action |
 |---|---|
 | `message_start` | captures the message ID for use in subsequent chunks |
-| `content_block_delta` | emitted as an OpenAI-format chunk with delta content |
+| `message_start` usage | retains `input_tokens` as the starting prompt count; emits no usage total on its own |
+| `content_block_start` with `tool_use` | opens an OpenAI-format tool-call delta with its index, id, type, and function name |
+| `content_block_delta` | emitted as an OpenAI-format text delta or tool-call argument fragment |
 | `message_delta` | emitted as a chunk with the `finish_reason` translated (`end_turn` becomes `stop`, `max_tokens` becomes `length`) |
+| `message_delta` usage | emits a complete running usage total immediately; cumulative `output_tokens` replace the previous output count, and a positive `input_tokens` replaces the opening input count |
 | `message_stop` | emitted as the `[DONE]` sentinel |
 
-Other Anthropic events (`content_block_start`, `content_block_stop`, `ping`) are silently skipped.
+Other Anthropic events (`content_block_stop`, `ping`, and content-block starts without tool use) are silently skipped. An error or truncation after a usage-bearing delta retains that reported total; a stream interrupted before its first such delta is recorded as unmeasured, even if `message_start` reported input tokens. Cache token fields are not counted separately.
 
 ## Chunk Format
 

@@ -6,6 +6,17 @@ import (
 	"net/http"
 )
 
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+// upstreamStreamRequest adds the gateway's usage ask only to the outbound
+// OpenAI-compatible streaming body, keeping it off the shared request type.
+type upstreamStreamRequest struct {
+	*ChatCompletionRequest
+	StreamOptions streamOptions `json:"stream_options"`
+}
+
 // parseStreamChunk parses one SSE data payload from an OpenAI-compatible stream.
 // an error envelope ({"error": {...}}) is returned as an error rather than
 // silently decoded into an all-zero chunk, so an upstream mid-stream failure

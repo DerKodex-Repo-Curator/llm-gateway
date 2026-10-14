@@ -1,11 +1,162 @@
 package providers
 
 import (
+	"context"
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestAnthropicResponseUsagePresence(t *testing.T) {
+	tests := []struct {
+		name  string
+		field string
+		want  *Usage
+	}{
+		{name: "absent"},
+		{name: "null", field: `,"usage":null`},
+		{name: "reported zeros", field: `,"usage":{"input_tokens":0,"output_tokens":0}`, want: &Usage{}},
+		{name: "reported counts", field: `,"usage":{"input_tokens":10,"output_tokens":5}`, want: &Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, `{"id":"msg_1","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn"`+tt.field+`}`)
+			}))
+			defer server.Close()
+			a := NewAnthropic("test-key", server.URL)
+			resp, err := a.ChatCompletion(context.Background(), &ChatCompletionRequest{
+				Model: "test-model", Messages: []Message{{Role: "user", Content: "hi"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(resp.Usage, tt.want) {
+				t.Errorf("usage = %+v, want %+v", resp.Usage, tt.want)
+			}
+			if resp.ID != "msg_1" || resp.Choices[0].Message.GetContentString() != "hello" {
+				t.Errorf("translated response = %+v", resp)
+			}
+		})
+	}
+}
+
+func TestAnthropicStreamUsage(t *testing.T) {
+	start := `{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":10,"output_tokens":1}}}`
+	delta := `{"type":"message_delta","usage":{"output_tokens":5}}`
+	stop := `{"type":"message_stop"}`
+	streamError := `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`
+	tests := []struct {
+		name      string
+		data      []string
+		wantUsage []Usage
+		wantOrder []string
+	}{
+		{
+			name: "cumulative output",
+			data: []string{start, delta, `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":8}}`, stop},
+			wantUsage: []Usage{
+				{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+				{PromptTokens: 10, CompletionTokens: 8, TotalTokens: 18},
+			},
+			wantOrder: []string{"usage", "usage", "chunk", "done"},
+		},
+		{
+			name: "delta input replaces start",
+			data: []string{start, `{"type":"message_delta","usage":{"input_tokens":20,"output_tokens":5}}`, `{"type":"message_delta","usage":{"output_tokens":8}}`, stop},
+			wantUsage: []Usage{
+				{PromptTokens: 20, CompletionTokens: 5, TotalTokens: 25},
+				{PromptTokens: 20, CompletionTokens: 8, TotalTokens: 28},
+			},
+			wantOrder: []string{"usage", "usage", "done"},
+		},
+		{
+			name:      "usage absent",
+			data:      []string{`{"type":"message_start","message":{"id":"msg_1"}}`, `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`, stop},
+			wantOrder: []string{"chunk", "done"},
+		},
+		{
+			name:      "start alone contributes no usage",
+			data:      []string{start, stop},
+			wantOrder: []string{"done"},
+		},
+		{
+			name:      "error after delta retains usage",
+			data:      []string{start, delta, streamError, stop},
+			wantUsage: []Usage{{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}},
+			wantOrder: []string{"usage", "error"},
+		},
+		{
+			name:      "error before delta emits no usage",
+			data:      []string{start, streamError, delta, stop},
+			wantOrder: []string{"error"},
+		},
+		{
+			name:      "truncation after delta retains usage",
+			data:      []string{start, delta},
+			wantUsage: []Usage{{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}},
+			wantOrder: []string{"usage"},
+		},
+		{
+			name: "truncation after start emits no usage",
+			data: []string{start},
+		},
+		{
+			name:      "reported zeros",
+			data:      []string{`{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":0}}}`, `{"type":"message_delta","usage":{"output_tokens":0}}`, stop},
+			wantUsage: []Usage{{}},
+			wantOrder: []string{"usage", "done"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sse strings.Builder
+			for _, data := range tt.data {
+				sse.WriteString("data: " + data + "\n\n")
+			}
+			a := NewAnthropic("test-key", "")
+			events := make(chan StreamEvent)
+			go a.readSSEStream(io.NopCloser(strings.NewReader(sse.String())), events, "test-model")
+			var gotUsage []Usage
+			var gotOrder []string
+			for event := range events {
+				switch {
+				case event.Usage != nil:
+					gotUsage = append(gotUsage, *event.Usage)
+					gotOrder = append(gotOrder, "usage")
+					if event.Chunk != nil || event.Err != nil || event.Done {
+						t.Errorf("usage event carries another payload: %+v", event)
+					}
+				case event.Chunk != nil:
+					gotOrder = append(gotOrder, "chunk")
+					if event.Chunk.Usage != nil {
+						t.Errorf("chunk carries usage: %+v", event.Chunk)
+					}
+				case event.Err != nil:
+					gotOrder = append(gotOrder, "error")
+					if !strings.Contains(event.Err.Error(), "Overloaded") {
+						t.Errorf("stream error = %v, want upstream message", event.Err)
+					}
+				case event.Done:
+					gotOrder = append(gotOrder, "done")
+				default:
+					t.Error("empty stream event")
+				}
+			}
+			if !reflect.DeepEqual(gotUsage, tt.wantUsage) {
+				t.Errorf("usage = %+v, want %+v", gotUsage, tt.wantUsage)
+			}
+			if !reflect.DeepEqual(gotOrder, tt.wantOrder) {
+				t.Errorf("event order = %v, want %v", gotOrder, tt.wantOrder)
+			}
+		})
+	}
+}
 
 func TestAnthropicTranslateRequest(t *testing.T) {
 	a := NewAnthropic("test-key", "")
@@ -149,7 +300,7 @@ func TestAnthropicTranslateResponse(t *testing.T) {
 		},
 		Model:      "claude-3-opus-20240229",
 		StopReason: "end_turn",
-		Usage: anthropicUsage{
+		Usage: &anthropicUsage{
 			InputTokens:  10,
 			OutputTokens: 5,
 		},

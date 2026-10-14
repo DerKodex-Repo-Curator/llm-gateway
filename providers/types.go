@@ -2,19 +2,19 @@ package providers
 
 // ChatCompletionRequest represents an OpenAI-compatible chat completion request.
 type ChatCompletionRequest struct {
-	Model            string         `json:"model"`
-	Messages         []Message      `json:"messages"`
-	MaxTokens        *int           `json:"max_tokens,omitempty"`
-	Temperature      *float64       `json:"temperature,omitempty"`
-	TopP             *float64       `json:"top_p,omitempty"`
-	N                *int           `json:"n,omitempty"`
-	Stream           bool           `json:"stream,omitempty"`
-	Stop             any            `json:"stop,omitempty"` // string or []string
-	PresencePenalty  *float64       `json:"presence_penalty,omitempty"`
-	FrequencyPenalty *float64       `json:"frequency_penalty,omitempty"`
-	User             string         `json:"user,omitempty"`
-	Tools            []Tool         `json:"tools,omitempty"`
-	ToolChoice       any            `json:"tool_choice,omitempty"` // string or object
+	Model            string          `json:"model"`
+	Messages         []Message       `json:"messages"`
+	MaxTokens        *int            `json:"max_tokens,omitempty"`
+	Temperature      *float64        `json:"temperature,omitempty"`
+	TopP             *float64        `json:"top_p,omitempty"`
+	N                *int            `json:"n,omitempty"`
+	Stream           bool            `json:"stream,omitempty"`
+	Stop             any             `json:"stop,omitempty"` // string or []string
+	PresencePenalty  *float64        `json:"presence_penalty,omitempty"`
+	FrequencyPenalty *float64        `json:"frequency_penalty,omitempty"`
+	User             string          `json:"user,omitempty"`
+	Tools            []Tool          `json:"tools,omitempty"`
+	ToolChoice       any             `json:"tool_choice,omitempty"` // string or object
 	ResponseFormat   *ResponseFormat `json:"response_format,omitempty"`
 }
 
@@ -119,6 +119,9 @@ type StreamChunk struct {
 	Model             string   `json:"model"`
 	Choices           []Choice `json:"choices"`
 	SystemFingerprint string   `json:"system_fingerprint,omitempty"`
+	// Usage is decoded from upstream, consumed by the reader, and cleared
+	// before the chunk is forwarded to the client.
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // ModelsResponse represents the response from the models endpoint.

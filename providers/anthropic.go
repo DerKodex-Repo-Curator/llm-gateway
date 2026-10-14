@@ -24,16 +24,16 @@ type Anthropic struct {
 
 // anthropic request/response types
 type anthropicRequest struct {
-	Model       string             `json:"model"`
-	MaxTokens   int                `json:"max_tokens"`
-	System      string             `json:"system,omitempty"`
-	Messages    []anthropicMessage `json:"messages"`
-	Stream      bool               `json:"stream,omitempty"`
-	Temperature *float64           `json:"temperature,omitempty"`
-	TopP        *float64           `json:"top_p,omitempty"`
-	StopSequences []string         `json:"stop_sequences,omitempty"`
-	Tools       []anthropicTool      `json:"tools,omitempty"`
-	ToolChoice  *anthropicToolChoice `json:"tool_choice,omitempty"`
+	Model         string               `json:"model"`
+	MaxTokens     int                  `json:"max_tokens"`
+	System        string               `json:"system,omitempty"`
+	Messages      []anthropicMessage   `json:"messages"`
+	Stream        bool                 `json:"stream,omitempty"`
+	Temperature   *float64             `json:"temperature,omitempty"`
+	TopP          *float64             `json:"top_p,omitempty"`
+	StopSequences []string             `json:"stop_sequences,omitempty"`
+	Tools         []anthropicTool      `json:"tools,omitempty"`
+	ToolChoice    *anthropicToolChoice `json:"tool_choice,omitempty"`
 }
 
 // anthropicTool is a function tool in Anthropic's request format. InputSchema
@@ -61,8 +61,8 @@ type anthropicMessage struct {
 // and response blocks (text or tool_use) read back from Anthropic. every
 // optional field is omitempty so unused fields don't leak into the wire format.
 type anthropicContentBlock struct {
-	Type   string          `json:"type"`
-	Text   string          `json:"text,omitempty"`
+	Type   string           `json:"type"`
+	Text   string           `json:"text,omitempty"`
 	Source *anthropicSource `json:"source,omitempty"`
 	// tool_use (assistant request blocks, and response blocks)
 	ID    string          `json:"id,omitempty"`
@@ -87,7 +87,7 @@ type anthropicResponse struct {
 	Model        string                  `json:"model"`
 	StopReason   string                  `json:"stop_reason"`
 	StopSequence *string                 `json:"stop_sequence"`
-	Usage        anthropicUsage          `json:"usage"`
+	Usage        *anthropicUsage         `json:"usage"`
 }
 
 type anthropicUsage struct {
@@ -121,6 +121,7 @@ type anthropicDelta struct {
 }
 
 type anthropicStreamUsage struct {
+	InputTokens  int `json:"input_tokens,omitempty"`
 	OutputTokens int `json:"output_tokens,omitempty"`
 }
 
@@ -229,6 +230,7 @@ func (a *Anthropic) readSSEStream(body io.ReadCloser, events chan<- StreamEvent,
 
 	scanner := bufio.NewScanner(body)
 	var messageID string
+	var promptTokens int
 	created := time.Now().Unix()
 
 	// streaming tool-call state: anthropic interleaves text and tool_use blocks
@@ -271,6 +273,9 @@ func (a *Anthropic) readSSEStream(body io.ReadCloser, events chan<- StreamEvent,
 		case "message_start":
 			if event.Message != nil {
 				messageID = event.Message.ID
+				if event.Message.Usage != nil {
+					promptTokens = event.Message.Usage.InputTokens
+				}
 			}
 
 		case "content_block_start":
@@ -310,6 +315,18 @@ func (a *Anthropic) readSSEStream(body io.ReadCloser, events chan<- StreamEvent,
 			}
 
 		case "message_delta":
+			if event.Usage != nil {
+				if event.Usage.InputTokens > 0 {
+					promptTokens = event.Usage.InputTokens
+				}
+				// delta counts are cumulative; emit each complete running total
+				// now so an error or truncation cannot discard reported usage.
+				events <- StreamEvent{Usage: &Usage{
+					PromptTokens:     promptTokens,
+					CompletionTokens: event.Usage.OutputTokens,
+					TotalTokens:      promptTokens + event.Usage.OutputTokens,
+				}}
+			}
 			if event.Delta != nil && event.Delta.StopReason != "" {
 				finishReason := a.translateStopReason(event.Delta.StopReason)
 				chunk := &StreamChunk{
@@ -593,6 +610,14 @@ func (a *Anthropic) translateResponse(resp *anthropicResponse, model string) *Ch
 	}
 
 	finishReason := a.translateStopReason(resp.StopReason)
+	var usage *Usage
+	if resp.Usage != nil {
+		usage = &Usage{
+			PromptTokens:     resp.Usage.InputTokens,
+			CompletionTokens: resp.Usage.OutputTokens,
+			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
+		}
+	}
 	return &ChatCompletionResponse{
 		ID:      resp.ID,
 		Object:  "chat.completion",
@@ -605,11 +630,7 @@ func (a *Anthropic) translateResponse(resp *anthropicResponse, model string) *Ch
 				FinishReason: &finishReason,
 			},
 		},
-		Usage: &Usage{
-			PromptTokens:     resp.Usage.InputTokens,
-			CompletionTokens: resp.Usage.OutputTokens,
-			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
-		},
+		Usage: usage,
 	}
 }
 

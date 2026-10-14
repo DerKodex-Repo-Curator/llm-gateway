@@ -20,6 +20,7 @@ type Provider interface {
 // StreamEvent represents an event in a streaming response.
 type StreamEvent struct {
 	Chunk *StreamChunk
+	Usage *Usage // assembled by the provider; may repeat, last value wins
 	Err   error
 	Done  bool
 }
